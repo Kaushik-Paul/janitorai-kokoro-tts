@@ -36,16 +36,16 @@ text-to-speech generation.
 1. JanitorAI renders a chat message in the browser.
 2. The Tampermonkey userscript finds the latest bot message, selected text, or
    text from its manual input box.
-3. Long text is split client-side into small natural chunks of about 800
+3. Long text is split client-side into small natural chunks of about 600
    characters.
-4. The userscript sends up to two TTS requests at a time to the Cloud Run API.
+4. The userscript sends up to four TTS requests at a time to the Cloud Run API.
 5. The backend generates WAV audio with Kokoro.
 6. The userscript decodes and combines the returned chunks, then plays the
    final audio through a Web Audio controller with replay, pause/play, seek,
    and 10-second skip controls.
 
-This keeps individual backend requests small enough to avoid large memory
-spikes while still using two Cloud Run instances when long text is available.
+This keeps individual backend requests small enough to reduce memory spikes
+while still using up to four Cloud Run instances when long text is available.
 
 The userscript keeps JanitorAI markdown-like text such as `**bold**`,
 `*italics*`, timestamps, narration, and dialogue so the TTS backend receives
@@ -65,7 +65,7 @@ the same emotional/contextual cues shown in the chat.
 - Audio controller with replay, pause/play, seek, back 10 seconds, and forward
   10 seconds.
 - API URL and API key stored under the collapsed Advanced section.
-- Client-side chunking around 800 characters, with at most two active TTS
+- Client-side chunking around 600 characters, with at most four active TTS
   requests.
 - Web Audio playback, avoiding browser media URL safety blocks.
 - Filters JanitorAI UI actions such as `Copy`, `Edit`, and `CopyEdit` from
@@ -147,7 +147,7 @@ Current Cloud Run defaults are tuned for the JanitorAI userscript:
 CPU: 2
 Memory: 4Gi
 Concurrency: 1
-Max instances: 2
+Max instances: 4
 Timeout: 300 seconds
 TORCH_NUM_THREADS: 2
 MAX_TEXT_CHARS: 6000
@@ -385,7 +385,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --cpu=2 \
   --memory=4Gi \
   --concurrency=1 \
-  --max-instances=2 \
+  --max-instances=4 \
   --timeout=300 \
   --set-env-vars="API_PASSWORD=$API_PASSWORD,TORCH_NUM_THREADS=2,MAX_TEXT_CHARS=6000"
 ```
@@ -434,12 +434,12 @@ Then deploy the same `IMAGE_URI` with the Cloud Run command above.
 
 ## Operational Notes
 
-- Keep Cloud Run `concurrency=1` so one request gets the full instance and a
-  second active userscript request can scale to a second instance.
-- Keep `max-instances=2` for economical parallelism. The userscript sends at
-  most two requests at once, so raising this limit will not help unless the
+- Keep Cloud Run `concurrency=1` so each TTS request gets the full instance and
+  parallel userscript requests can scale to separate instances.
+- Keep `max-instances=4` for economical parallelism. The userscript sends at
+  most four requests at once, so raising this limit will not help unless the
   userscript is changed too.
-- Individual userscript requests are kept around 800 characters to reduce
+- Individual userscript requests are kept around 600 characters to reduce
   memory pressure.
 - The backend also splits each request internally with `MAX_SYNTHESIS_CHARS`.
 - Cold starts include loading the bundled Kokoro model from the container
@@ -454,7 +454,7 @@ Then deploy the same `IMAGE_URI` with the Cloud Run command above.
   current userscript is installed. It uses Web Audio playback instead of an
   HTML media element.
 - If long messages cause Cloud Run `503` responses, check Cloud Run logs for
-  out-of-memory events and confirm the userscript version uses 800-character
+  out-of-memory events and confirm the userscript version uses 600-character
   chunks.
 - If `Read latest` reads the wrong text, use the text box as a fallback and
   capture a fresh JanitorAI HTML snapshot for selector tuning.

@@ -29,9 +29,10 @@
 
   const STORAGE_KEY = 'janitor-kokoro-tts-settings-v2';
   const ROOT_ID = 'kokoro-tts-root';
+  const USER_SCRIPT_VERSION = '1.5.18';
   const MAX_TEXT_CHARS = 5900;
-  const REQUEST_CHUNK_CHARS = 800;
-  const MAX_PARALLEL_REQUESTS = 2;
+  const REQUEST_CHUNK_CHARS = 600;
+  const MAX_PARALLEL_REQUESTS = 4;
   const ACTION_TEXT_PATTERN = /^(copy|edit|copy\s*edit|copyedit|delete|regenerate|continue|retry|swipe|report|more|less)$/i;
 
   let settings = loadSettings();
@@ -59,6 +60,7 @@
   let playbackStartedAt = 0;
   let playbackTimer = null;
   let isPlaybackPaused = true;
+  let isProgressSeeking = false;
   const activeRequests = new Set();
   let stopRequested = false;
   let voicesLoaded = false;
@@ -595,6 +597,7 @@
           data: options.data,
           responseType: 'arraybuffer',
           timeout: options.timeout || 240000,
+          fetch: Boolean(options.useFetchTransport),
           onload: async (response) => {
             activeRequests.delete(request);
             if (response.status >= 200 && response.status < 300) {
@@ -702,7 +705,7 @@
       pauseButtonEl.textContent = isPlaybackPaused ? 'Play' : 'Pause';
     }
 
-    if (progressInputEl && duration > 0 && document.activeElement !== progressInputEl) {
+    if (progressInputEl && duration > 0 && !isProgressSeeking) {
       progressInputEl.value = String(Math.round((offset / duration) * 1000));
     }
 
@@ -792,6 +795,117 @@
         maybePromise.then(resolve, reject);
       }
     });
+  }
+
+  function readAscii(bytes, offset, length) {
+    return String.fromCharCode(...bytes.subarray(offset, offset + length));
+  }
+
+  function writeAscii(bytes, offset, value) {
+    for (let index = 0; index < value.length; index += 1) {
+      bytes[offset + index] = value.charCodeAt(index);
+    }
+  }
+
+  function parseWav(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const view = new DataView(buffer);
+
+    if (bytes.length < 44 || readAscii(bytes, 0, 4) !== 'RIFF' || readAscii(bytes, 8, 4) !== 'WAVE') {
+      throw new Error('Audio chunk is not a RIFF/WAVE file.');
+    }
+
+    let fmtBytes = null;
+    let formatKey = '';
+    let dataOffset = -1;
+    let dataSize = 0;
+    let offset = 12;
+
+    while (offset + 8 <= bytes.length) {
+      const chunkId = readAscii(bytes, offset, 4);
+      const chunkSize = view.getUint32(offset + 4, true);
+      const chunkDataOffset = offset + 8;
+
+      if (chunkDataOffset + chunkSize > bytes.length) {
+        throw new Error(`Invalid WAV ${chunkId.trim() || 'chunk'} size.`);
+      }
+
+      if (chunkId === 'fmt ') {
+        if (chunkSize < 16) throw new Error('WAV fmt chunk is too small.');
+        fmtBytes = bytes.slice(chunkDataOffset, chunkDataOffset + chunkSize);
+        formatKey = [
+          view.getUint16(chunkDataOffset, true),
+          view.getUint16(chunkDataOffset + 2, true),
+          view.getUint32(chunkDataOffset + 4, true),
+          view.getUint16(chunkDataOffset + 12, true),
+          view.getUint16(chunkDataOffset + 14, true),
+        ].join(':');
+      } else if (chunkId === 'data') {
+        dataOffset = chunkDataOffset;
+        dataSize = chunkSize;
+      }
+
+      offset = chunkDataOffset + chunkSize + (chunkSize % 2);
+    }
+
+    if (!fmtBytes || dataOffset < 0) {
+      throw new Error('WAV chunk is missing fmt or data.');
+    }
+
+    return { bytes, fmtBytes, formatKey, dataOffset, dataSize };
+  }
+
+  function combineWavBuffers(buffers) {
+    const validBuffers = buffers.filter(Boolean);
+
+    if (!validBuffers.length) {
+      throw new Error('No audio buffers were generated.');
+    }
+
+    if (validBuffers.length === 1) {
+      return validBuffers[0];
+    }
+
+    const parsedBuffers = validBuffers.map(parseWav);
+    const first = parsedBuffers[0];
+
+    if (!parsedBuffers.every((item) => item.formatKey === first.formatKey)) {
+      throw new Error('Kokoro returned WAV chunks with different audio formats.');
+    }
+
+    const fmtSize = first.fmtBytes.byteLength;
+    const fmtPad = fmtSize % 2;
+    const dataSize = parsedBuffers.reduce((sum, item) => sum + item.dataSize, 0);
+    const dataPad = dataSize % 2;
+    const fileSize = 12 + 8 + fmtSize + fmtPad + 8 + dataSize + dataPad;
+    const output = new ArrayBuffer(fileSize);
+    const bytes = new Uint8Array(output);
+    const view = new DataView(output);
+    let offset = 0;
+
+    writeAscii(bytes, offset, 'RIFF');
+    offset += 4;
+    view.setUint32(offset, fileSize - 8, true);
+    offset += 4;
+    writeAscii(bytes, offset, 'WAVE');
+    offset += 4;
+    writeAscii(bytes, offset, 'fmt ');
+    offset += 4;
+    view.setUint32(offset, fmtSize, true);
+    offset += 4;
+    bytes.set(first.fmtBytes, offset);
+    offset += fmtSize + fmtPad;
+    writeAscii(bytes, offset, 'data');
+    offset += 4;
+    view.setUint32(offset, dataSize, true);
+    offset += 4;
+
+    for (const item of parsedBuffers) {
+      bytes.set(item.bytes.subarray(item.dataOffset, item.dataOffset + item.dataSize), offset);
+      offset += item.dataSize;
+    }
+
+    return output;
   }
 
   function combineAudioBuffers(buffers) {
@@ -886,8 +1000,18 @@
     });
   }
 
-  async function synthesizeSpeech(text, index = 0, total = 1) {
-    const url = `${cleanBaseUrl(settings.apiUrl)}/v1/audio/speech`;
+  function speechUrl(index, total, batchId) {
+    const url = new URL(`${cleanBaseUrl(settings.apiUrl)}/v1/audio/speech`);
+    if (total > 1) {
+      url.searchParams.set('batch', batchId);
+      url.searchParams.set('chunk', String(index + 1));
+      url.searchParams.set('total', String(total));
+    }
+    return url.toString();
+  }
+
+  async function synthesizeSpeech(text, index = 0, total = 1, batchId = '') {
+    const url = speechUrl(index, total, batchId);
     const response = await requestArrayBuffer(url, {
       method: 'POST',
       headers: {
@@ -901,11 +1025,12 @@
       }),
       retries: 3,
       retryStatuses: [429, 500, 502, 503, 504],
+      useFetchTransport: true,
     });
 
     validateAudioResponse(response);
-    setStatus(total > 1 ? `Decoding ${index + 1}/${total}...` : 'Decoding audio...', 'info');
-    return decodeAudioBuffer(getAudioContext(), response.response);
+    setStatus(total > 1 ? `Received ${index + 1}/${total}.` : 'Received audio.', 'info');
+    return response.response;
   }
 
   async function synthesizeChunks(chunks) {
@@ -913,24 +1038,42 @@
       return [await synthesizeSpeech(chunks[0], 0, 1)];
     }
 
-    const audioBuffers = new Array(chunks.length);
-    const workerCount = Math.min(MAX_PARALLEL_REQUESTS, chunks.length);
-    let nextIndex = 0;
+    const wavBuffers = new Array(chunks.length);
+    const batchId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-    setStatus(`Generating ${chunks.length} small parts (${workerCount} at a time)...`, 'info');
+    setStatus(`Generating ${chunks.length} small parts (${MAX_PARALLEL_REQUESTS} at a time)...`, 'info');
 
-    async function runWorker() {
-      while (!stopRequested && nextIndex < chunks.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        setStatus(`Generating ${index + 1}/${chunks.length} (${chunks[index].length} chars)...`, 'info');
-        audioBuffers[index] = await synthesizeSpeech(chunks[index], index, chunks.length);
-      }
+    for (let start = 0; start < chunks.length && !stopRequested; start += MAX_PARALLEL_REQUESTS) {
+      const wave = chunks.slice(start, start + MAX_PARALLEL_REQUESTS);
+      const first = start + 1;
+      const last = start + wave.length;
+      setStatus(`Generating ${first}-${last}/${chunks.length} in parallel...`, 'info');
+
+      await Promise.all(wave.map(async (chunk, waveIndex) => {
+        const index = start + waveIndex;
+        wavBuffers[index] = await synthesizeSpeech(chunk, index, chunks.length, batchId);
+      }));
     }
 
-    await Promise.all(Array.from({ length: workerCount }, runWorker));
+    return wavBuffers;
+  }
 
-    return audioBuffers;
+  async function decodeGeneratedAudio(wavBuffers) {
+    try {
+      setStatus(wavBuffers.length > 1 ? 'Combining WAV chunks...' : 'Preparing audio...', 'info');
+      const combinedWav = combineWavBuffers(wavBuffers);
+      setStatus('Decoding audio...', 'info');
+      return await decodeAudioBuffer(getAudioContext(), combinedWav);
+    } catch (error) {
+      setStatus(`Fast combine failed; decoding chunks separately: ${error.message}`, 'warn');
+      const decodedBuffers = [];
+      for (let index = 0; index < wavBuffers.length; index += 1) {
+        if (stopRequested) break;
+        setStatus(`Decoding ${index + 1}/${wavBuffers.length}...`, 'info');
+        decodedBuffers.push(await decodeAudioBuffer(getAudioContext(), wavBuffers[index]));
+      }
+      return combineAudioBuffers(decodedBuffers);
+    }
   }
 
   async function speakText(text, label = 'text') {
@@ -954,7 +1097,7 @@
       setStatus(chunks.length > 1
         ? `Generating ${chunks.length} small parts, ${Math.min(MAX_PARALLEL_REQUESTS, chunks.length)} at a time...`
         : `Generating audio (${prepared.length} chars)...`, 'info');
-      const audioBuffer = combineAudioBuffers(await synthesizeChunks(chunks));
+      const audioBuffer = await decodeGeneratedAudio(await synthesizeChunks(chunks));
 
       if (stopRequested) {
         setStatus('Stopped.', 'warn');
@@ -1447,7 +1590,7 @@
     statusEl = document.createElement('div');
     statusEl.className = 'kokoro-status';
     statusEl.dataset.tone = 'info';
-    statusEl.textContent = 'Ready.';
+    statusEl.textContent = `Ready. v${USER_SCRIPT_VERSION}`;
 
     latestPreviewEl = document.createElement('div');
     latestPreviewEl.className = 'kokoro-preview';
@@ -1481,9 +1624,14 @@
       saveFromControls();
     });
 
+    progressInputEl.addEventListener('pointerdown', () => {
+      isProgressSeeking = true;
+    });
+
     progressInputEl.addEventListener('input', () => {
       if (!activeAudioBuffer) return;
 
+      isProgressSeeking = true;
       const ratio = Math.min(Math.max(Number(progressInputEl.value) || 0, 0), 1000) / 1000;
       const offset = activeAudioBuffer.duration * ratio;
       if (timeEl) {
@@ -1493,6 +1641,21 @@
 
     progressInputEl.addEventListener('change', async () => {
       await seekToProgress(progressInputEl.value);
+      isProgressSeeking = false;
+      updatePlaybackControls();
+    });
+
+    progressInputEl.addEventListener('pointerup', async () => {
+      if (activeAudioBuffer) {
+        await seekToProgress(progressInputEl.value);
+      }
+      isProgressSeeking = false;
+      updatePlaybackControls();
+    });
+
+    progressInputEl.addEventListener('blur', () => {
+      isProgressSeeking = false;
+      updatePlaybackControls();
     });
 
     root.addEventListener('click', async (event) => {
