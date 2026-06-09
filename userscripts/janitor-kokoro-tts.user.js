@@ -19,8 +19,8 @@
   'use strict';
 
   const DEFAULTS = {
-    apiUrl: 'https://www.kokoro.pp.ua',
-    apiKey: 'iamawesome',
+    apiUrl: '<Url>',
+    apiKey: '<password>',
     voice: 'af_heart',
     speed: 1,
     collapsed: false,
