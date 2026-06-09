@@ -1,15 +1,59 @@
-# Kokoro Cloud Run TTS API
+# JanitorAI Kokoro TTS
 
-Password-protected FastAPI service for running
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) text to speech on
-Google Cloud Run.
+Add text-to-speech controls to [JanitorAI](https://janitorai.com/) with a
+Tampermonkey userscript and a private Kokoro backend running on Google Cloud
+Run.
 
-The Docker image downloads the Kokoro model, weights, and supported English
-voice tensors at build time, stores them under `/opt/kokoro`, and then runs the
-service with Hugging Face and Transformers offline mode enabled. Requests are
-served from the files baked into the image.
+The project has two pieces:
 
-## What It Does
+- `userscripts/janitor-kokoro-tts.user.js` injects a Kokoro TTS panel into
+  JanitorAI. It can read the latest bot message, selected text, or text pasted
+  into its box.
+- `main/app.py` exposes a password-protected FastAPI service that runs
+  [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) and returns generated
+  speech as WAV audio.
+
+The userscript keeps JanitorAI markdown-like text such as `**bold**`,
+`*italics*`, timestamps, narration, and dialogue so the TTS backend receives
+the same emotional/contextual cues shown in the chat.
+
+## How It Works
+
+1. JanitorAI renders a chat message in the browser.
+2. The Tampermonkey userscript finds the latest bot message, selected text, or
+   text from its manual input box.
+3. Long text is split client-side into small natural chunks of about 800
+   characters.
+4. The userscript sends up to two TTS requests at a time to the Cloud Run API.
+5. The backend generates WAV audio with Kokoro.
+6. The userscript decodes and combines the returned chunks, then plays the
+   final audio through a Web Audio controller with replay, pause/play, seek,
+   and 10-second skip controls.
+
+This keeps individual backend requests small enough to avoid large memory
+spikes while still using two Cloud Run instances when long text is available.
+
+## Features
+
+### JanitorAI Userscript
+
+- Floating Kokoro TTS panel on `janitorai.com`.
+- Read latest bot message.
+- Read currently selected text.
+- Read manually pasted text.
+- Manual text box fallback when selection is unreliable.
+- Female voice list only.
+- Speed control.
+- Audio controller with replay, pause/play, seek, back 10 seconds, and forward
+  10 seconds.
+- API URL and API key stored under the collapsed Advanced section.
+- Client-side chunking around 800 characters, with at most two active TTS
+  requests.
+- Web Audio playback, avoiding browser media URL safety blocks.
+- Filters JanitorAI UI actions such as `Copy`, `Edit`, and `CopyEdit` from
+  spoken text.
+
+### Cloud Run Backend
 
 - Runs Kokoro-82M on CPU.
 - Exposes a FastAPI HTTP API.
@@ -17,13 +61,111 @@ served from the files baked into the image.
 - Returns generated speech as `audio/wav` at 24 kHz.
 - Supports American and British English voices.
 - Supports configurable speech speed from `0.5` to `2.0`.
-- Keeps model access serialized with a process-local inference lock.
-- Uses one Uvicorn worker, which is the expected setup for the shared CPU model.
-- Allows CORS from all origins while still enforcing API-key authentication.
-- Fits Cloud Run scale-to-zero deployment because the model is bundled into the
-  container image.
+- Bundles the Kokoro model into the container image for Cloud Run scale-to-zero.
+- Uses one Uvicorn worker and a process-local inference lock for the shared CPU
+  model.
 
-## API
+## Project Structure
+
+```text
+kokoro-cloud-run/
+├── main/
+│   ├── __init__.py
+│   └── app.py
+├── scripts/
+│   ├── deploy_cloud_run.py
+│   └── download_model.py
+├── userscripts/
+│   └── janitor-kokoro-tts.user.js
+├── demo.html
+├── Dockerfile
+├── LICENSE
+├── README.md
+└── requirements.txt
+```
+
+`demo.html` is a local JanitorAI chat snapshot used while tuning message
+extraction.
+
+## Quick Start
+
+### 1. Deploy The Backend
+
+Create a `.env` file or export these values:
+
+```bash
+export PROJECT_ID="your-gcp-project-id"
+export REGION="us-central1"
+export REPOSITORY="kokoro"
+export IMAGE_NAME="kokoro-cloud-run"
+export SERVICE_NAME="kokoro-tts"
+export API_PASSWORD="replace-with-a-long-random-secret"
+```
+
+Deploy with the helper script:
+
+```bash
+python3 scripts/deploy_cloud_run.py \
+  --project-id "$PROJECT_ID" \
+  --region "$REGION" \
+  --repository "$REPOSITORY" \
+  --image-name "$IMAGE_NAME" \
+  --service-name "$SERVICE_NAME" \
+  --api-password "$API_PASSWORD" \
+  --build-mode cloud-build
+```
+
+The deploy script:
+
+- enables required Google Cloud APIs,
+- creates the Artifact Registry repository if needed,
+- builds and pushes the Docker image,
+- deploys Cloud Run,
+- keeps the newest Artifact Registry image by default.
+
+Current Cloud Run defaults are tuned for the JanitorAI userscript:
+
+```text
+CPU: 2
+Memory: 4Gi
+Concurrency: 1
+Max instances: 2
+Timeout: 300 seconds
+TORCH_NUM_THREADS: 2
+MAX_TEXT_CHARS: 6000
+```
+
+### 2. Install The Userscript
+
+1. Open Tampermonkey in your browser.
+2. Create a new userscript.
+3. Replace its contents with `userscripts/janitor-kokoro-tts.user.js`.
+4. Save it.
+5. Open or refresh JanitorAI.
+6. In the Kokoro TTS panel, open Advanced and confirm:
+   - API URL points to your Cloud Run domain.
+   - API key matches `API_PASSWORD`.
+
+The userscript is already configured for:
+
+```text
+https://www.kokoro.pp.ua
+```
+
+For another deployment, update the default `apiUrl` and `apiKey` in the
+userscript before copying it into Tampermonkey, or change them from the panel's
+Advanced section.
+
+### 3. Use It In JanitorAI
+
+- `Read latest` reads the latest rendered bot message.
+- `Read selected` reads highlighted text.
+- `Read box` reads text pasted into the userscript text box.
+- `Stop` aborts active requests and stops playback.
+- Use the controller to replay, pause/play, seek, or skip after audio is
+  generated.
+
+## Backend API
 
 Public endpoints:
 
@@ -63,7 +205,7 @@ curl "$SERVICE_URL/v1/voices" \
   -H "X-API-Key: $API_PASSWORD"
 ```
 
-## Configuration
+## Backend Configuration
 
 Runtime environment variables:
 
@@ -72,6 +214,7 @@ Runtime environment variables:
 | `API_PASSWORD` | Yes | None | Shared API key expected in the `X-API-Key` header. |
 | `PORT` | No | `8080` | HTTP port used by Cloud Run and Uvicorn. |
 | `MAX_TEXT_CHARS` | No | `6000` | Maximum accepted input text length. |
+| `MAX_SYNTHESIS_CHARS` | No | `500` | Internal synthesis segment size inside one request. |
 | `TORCH_NUM_THREADS` | No | `2` | Number of PyTorch CPU threads. |
 | `KOKORO_MODEL_DIR` | No | `/opt/kokoro` | Directory containing Kokoro files inside the image. |
 
@@ -83,22 +226,7 @@ HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
 
-## Project Structure
-
-```text
-kokoro-cloud-run/
-├── main/
-│   ├── __init__.py
-│   └── app.py
-├── scripts/
-│   └── download_model.py
-├── Dockerfile
-├── LICENSE
-├── README.md
-└── requirements.txt
-```
-
-## Build Locally
+## Local Backend Development
 
 The image build downloads Kokoro model files from Hugging Face, installs the CPU
 PyTorch wheel, installs the spaCy English model, and verifies the required model
@@ -133,18 +261,14 @@ curl -X POST http://localhost:8080/v1/audio/speech \
   -d '{"text":"Kokoro is running locally.","voice":"af_heart","speed":1.0}'
 ```
 
-## Deploy To Google Cloud
+Point the userscript Advanced API URL at `http://localhost:8080` only if your
+browser and Tampermonkey setup allow that mixed local request from JanitorAI.
+For normal use, use the HTTPS Cloud Run URL.
 
-Set the deployment variables:
+## Manual Cloud Run Deploy
 
-```bash
-export PROJECT_ID="your-gcp-project-id"
-export REGION="us-central1"
-export REPOSITORY="kokoro"
-export IMAGE_NAME="kokoro-cloud-run"
-export SERVICE_NAME="kokoro-tts"
-export API_PASSWORD="replace-with-a-long-random-secret"
-```
+The helper script is the easiest path, but the equivalent manual deploy flow is
+shown below.
 
 Authenticate Docker for Artifact Registry:
 
@@ -176,11 +300,6 @@ Build the image locally for Artifact Registry:
 export IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:latest"
 
 docker build -t "$IMAGE_URI" .
-```
-
-Push the image to Artifact Registry:
-
-```bash
 docker push "$IMAGE_URI"
 ```
 
@@ -201,10 +320,10 @@ gcloud run deploy "$SERVICE_NAME" \
   --set-env-vars="API_PASSWORD=$API_PASSWORD,TORCH_NUM_THREADS=2,MAX_TEXT_CHARS=6000"
 ```
 
-`--allow-unauthenticated` lets HTTP clients reach the FastAPI service. The API
-still requires `X-API-Key` for speech generation and voice listing. If you want
-Google IAM in front of the service too, remove `--allow-unauthenticated` and
-call Cloud Run with an identity token.
+`--allow-unauthenticated` lets browser clients reach the FastAPI service. The
+API still requires `X-API-Key` for speech generation and voice listing. If you
+want Google IAM in front of the service too, remove `--allow-unauthenticated`
+and call Cloud Run with an identity token.
 
 Get the deployed service URL:
 
@@ -228,7 +347,7 @@ curl -X POST "$SERVICE_URL/v1/audio/speech" \
   -d '{"text":"Kokoro is running on Cloud Run.","voice":"af_heart","speed":1.0}'
 ```
 
-## Build In Google Cloud Build
+## Cloud Build
 
 If you prefer not to build the large image locally, submit the build directly to
 Cloud Build and push it to Artifact Registry:
@@ -245,16 +364,32 @@ Then deploy the same `IMAGE_URI` with the Cloud Run command above.
 
 ## Operational Notes
 
-- The service is CPU-only. Start with `--cpu=2` and `--memory=4Gi`, then tune
-  after measuring cold starts and synthesis latency.
-- `--concurrency=1` gives each request a full instance. `--max-instances=2`
-  lets the userscript process small client-side chunks two at a time while
-  still allowing scale-to-zero when idle.
+- Keep Cloud Run `concurrency=1` so one request gets the full instance and a
+  second active userscript request can scale to a second instance.
+- Keep `max-instances=2` for economical parallelism. The userscript sends at
+  most two requests at once, so raising this limit will not help unless the
+  userscript is changed too.
+- Individual userscript requests are kept around 800 characters to reduce
+  memory pressure.
+- The backend also splits each request internally with `MAX_SYNTHESIS_CHARS`.
 - Cold starts include loading the bundled Kokoro model from the container
   filesystem.
 - `API_PASSWORD` should be a long random value. For production, prefer storing
   it in Secret Manager and mounting it as an environment variable.
 - The generated audio is returned directly; no audio files are written to disk.
+
+## Troubleshooting
+
+- If JanitorAI playback fails with a media URL safety error, make sure the
+  current userscript is installed. It uses Web Audio playback instead of an
+  HTML media element.
+- If long messages cause Cloud Run `503` responses, check Cloud Run logs for
+  out-of-memory events and confirm the userscript version uses 800-character
+  chunks.
+- If `Read latest` reads the wrong text, use the text box as a fallback and
+  capture a fresh JanitorAI HTML snapshot for selector tuning.
+- If voices fail to load, confirm the API URL, API key, and Tampermonkey
+  `@connect` domains match your backend domain.
 
 ## License
 
