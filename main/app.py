@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
@@ -43,6 +44,10 @@ SAMPLE_RATE = 24_000
 
 MAX_TEXT_CHARS = int(
     os.getenv("MAX_TEXT_CHARS", "6000")
+)
+
+MAX_SYNTHESIS_CHARS = int(
+    os.getenv("MAX_SYNTHESIS_CHARS", "500")
 )
 
 TORCH_NUM_THREADS = max(
@@ -378,6 +383,70 @@ def stream_buffer(
         buffer.close()
 
 
+def split_text_for_synthesis(
+    text: str,
+    max_chars: int = MAX_SYNTHESIS_CHARS,
+) -> list[str]:
+    max_chars = max(100, max_chars)
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n{2,}", text.replace("\r\n", "\n"))
+        if paragraph.strip()
+    ]
+    segments: list[str] = []
+
+    def add_words(value: str) -> None:
+        current = ""
+        for word in value.split():
+            next_value = word if not current else f"{current} {word}"
+            if len(next_value) <= max_chars:
+                current = next_value
+                continue
+
+            if current:
+                segments.append(current)
+            current = word
+
+        if current:
+            segments.append(current)
+
+    for paragraph in paragraphs:
+        if len(paragraph) <= max_chars:
+            segments.append(paragraph)
+            continue
+
+        current = ""
+        sentences = re.findall(
+            r"[^.!?\n]+(?:[.!?]+[\"')\]]*|$)",
+            paragraph,
+        ) or [paragraph]
+
+        for sentence_value in sentences:
+            sentence = sentence_value.strip()
+            if not sentence:
+                continue
+
+            if len(sentence) > max_chars:
+                if current:
+                    segments.append(current)
+                    current = ""
+                add_words(sentence)
+                continue
+
+            next_value = sentence if not current else f"{current} {sentence}"
+            if len(next_value) <= max_chars:
+                current = next_value
+            else:
+                if current:
+                    segments.append(current)
+                current = sentence
+
+        if current:
+            segments.append(current)
+
+    return segments or [text.strip()]
+
+
 @app.post(
     "/v1/audio/speech",
     dependencies=[Depends(require_api_key)],
@@ -405,39 +474,41 @@ def create_speech(
     )
 
     audio_chunks: list[np.ndarray] = []
+    text_segments = split_text_for_synthesis(payload.text)
 
     try:
         with INFERENCE_LOCK, torch.inference_mode():
-            generator = pipeline(
-                payload.text,
-                voice=payload.voice,
-                speed=payload.speed,
-                split_pattern=r"\n+",
-            )
+            for text_segment in text_segments:
+                generator = pipeline(
+                    text_segment,
+                    voice=payload.voice,
+                    speed=payload.speed,
+                    split_pattern=r"\n+",
+                )
 
-            for result in generator:
-                audio = result.audio
+                for result in generator:
+                    audio = result.audio
 
-                if audio is None:
-                    continue
+                    if audio is None:
+                        continue
 
-                if torch.is_tensor(audio):
-                    chunk = (
-                        audio
-                        .detach()
-                        .cpu()
-                        .numpy()
-                    )
-                else:
-                    chunk = np.asarray(audio)
+                    if torch.is_tensor(audio):
+                        chunk = (
+                            audio
+                            .detach()
+                            .cpu()
+                            .numpy()
+                        )
+                    else:
+                        chunk = np.asarray(audio)
 
-                chunk = np.asarray(
-                    chunk,
-                    dtype=np.float32,
-                ).squeeze()
+                    chunk = np.asarray(
+                        chunk,
+                        dtype=np.float32,
+                    ).squeeze()
 
-                if chunk.size:
-                    audio_chunks.append(chunk)
+                    if chunk.size:
+                        audio_chunks.append(chunk)
 
     except Exception as exc:
         # Return the exception type but not sensitive internal
