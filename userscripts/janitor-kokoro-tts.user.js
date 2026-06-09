@@ -29,7 +29,7 @@
 
   const STORAGE_KEY = 'janitor-kokoro-tts-settings-v2';
   const ROOT_ID = 'kokoro-tts-root';
-  const USER_SCRIPT_VERSION = '1.5.18';
+  const USER_SCRIPT_VERSION = '1.5.27';
   const MAX_TEXT_CHARS = 5900;
   const REQUEST_CHUNK_CHARS = 600;
   const MAX_PARALLEL_REQUESTS = 4;
@@ -90,6 +90,19 @@
     statusEl.dataset.tone = tone;
   }
 
+  function setTextPreview(label, value) {
+    if (!latestPreviewEl) return;
+
+    const text = textForSpeech(value);
+    if (!text) {
+      latestPreviewEl.textContent = `${label}: no readable text.`;
+      return;
+    }
+
+    const preview = text.length > 180 ? `${text.slice(0, 180)}...` : text;
+    latestPreviewEl.textContent = `${label} (${text.length} chars): ${preview}`;
+  }
+
   function normalizeText(value) {
     return String(value || '')
       .normalize('NFKC')
@@ -137,7 +150,7 @@
     const text = textForSpeech(selection.toString());
     if (text) {
       rememberedSelection = text;
-      setStatus(`Selection saved (${text.length} chars).`, 'info');
+      setTextPreview('Selected text saved', text);
     }
   }
 
@@ -151,8 +164,20 @@
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  function isElementNode(node) {
+    return Boolean(node && node.nodeType === 1);
+  }
+
+  function pageDocument() {
+    return (typeof unsafeWindow === 'object' && unsafeWindow.document) || document;
+  }
+
+  function queryPageAll(selector) {
+    return Array.from(pageDocument().querySelectorAll(selector));
+  }
+
   function visible(element) {
-    if (!(element instanceof HTMLElement)) return false;
+    if (!isElementNode(element)) return false;
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
     return (
@@ -177,8 +202,6 @@
       'API key',
       'Text box',
       'Advanced',
-      'CopyEdit',
-      'Copy Edit',
       'selection saved',
       'loading voices',
     ].map(escapeRegExp).join('|'), 'i');
@@ -188,7 +211,7 @@
     const value = normalizeText(text);
     if (value.length < 8) return false;
     if (value.length > MAX_TEXT_CHARS * 2) return false;
-    if (uiTextNoisePattern().test(value)) return false;
+    if (value.length < 240 && uiTextNoisePattern().test(value)) return false;
     return /[A-Za-z0-9]/.test(value);
   }
 
@@ -216,6 +239,12 @@
       'footer',
       '[role="button"]',
       '[role="menu"]',
+      '[class*="messageControls" i]',
+      '[class*="messageFooter" i]',
+      '[class*="messageAvatar" i]',
+      '[class*="messageName" i]',
+      '[class*="nameContainer" i]',
+      '[class*="nameText" i]',
       '[aria-label*="copy" i]',
       '[aria-label*="edit" i]',
     ].join(',')).forEach((node) => node.remove());
@@ -249,6 +278,7 @@
       '[class*="messageControls" i]',
       '[class*="messageFooter" i]',
       '[class*="messageAvatar" i]',
+      '[class*="messageName" i]',
       '[class*="nameContainer" i]',
       '[class*="nameText" i]',
       '[aria-label*="copy" i]',
@@ -285,17 +315,69 @@
   }
 
   function messageContentElement(wrapper) {
-    const body = wrapper.querySelector('[class*="messageBody" i]');
+    const body = wrapper.matches?.('[class*="messageBody" i]')
+      ? wrapper
+      : wrapper.querySelector('[class*="messageBody" i]');
     if (!body) return wrapper;
 
-    const content = body.querySelector(':scope > .css-17apud6');
+    const content = body.matches?.('.css-17apud6')
+      ? body
+      : body.querySelector(':scope > .css-17apud6, .css-17apud6');
     if (content) return content;
 
     const bodyChildren = Array.from(body.children).filter((child) => (
-      !child.matches('[class*="nameContainer" i], [class*="messageFooter" i], [class*="messageAvatar" i]')
+      !child.matches([
+        '[class*="messageName" i]',
+        '[class*="nameContainer" i]',
+        '[class*="nameText" i]',
+        '[class*="messageFooter" i]',
+        '[class*="messageAvatar" i]',
+        '[class*="messageControls" i]',
+      ].join(','))
     ));
 
     return bodyChildren.at(-1) || body;
+  }
+
+  function messageNameText(wrapper) {
+    return normalizeText(wrapper.querySelector?.('[class*="nameText" i]')?.textContent || '');
+  }
+
+  function stripLeadingMessageName(value, wrapper) {
+    const name = messageNameText(wrapper);
+    const text = cleanExtractedMessageText(value);
+    if (!name || !text) return text;
+
+    const lines = text.split('\n');
+    if (normalizeText(lines[0]) !== name) return text;
+
+    return cleanExtractedMessageText(lines.slice(1).join('\n'));
+  }
+
+  function readableTextFromMessageNode(node) {
+    if (!node) return '';
+
+    const clone = node.cloneNode(true);
+    clone.querySelectorAll([
+      'button',
+      'input',
+      'select',
+      'textarea',
+      'svg',
+      'img',
+      '[role="button"]',
+      '[role="menu"]',
+      '[class*="messageControls" i]',
+      '[class*="messageFooter" i]',
+      '[class*="messageAvatar" i]',
+      '[class*="messageName" i]',
+      '[class*="nameContainer" i]',
+      '[class*="nameText" i]',
+      '[aria-label*="copy" i]',
+      '[aria-label*="edit" i]',
+    ].join(',')).forEach((element) => element.remove());
+
+    return cleanExtractedMessageText(clone.innerText || clone.textContent || '');
   }
 
   function messageWrapperFromAvatar(avatar) {
@@ -309,7 +391,16 @@
 
   function messageWrapperText(wrapper) {
     const content = messageContentElement(wrapper);
-    return cleanExtractedMessageText(markdownFromNode(content));
+    const readableText = stripLeadingMessageName(readableTextFromMessageNode(content), wrapper);
+    if (readableText) return readableText;
+
+    const text = stripLeadingMessageName(markdownFromNode(content), wrapper);
+    const name = messageNameText(wrapper);
+
+    if (name && text === name) return '';
+    if (text) return text;
+
+    return stripLeadingMessageName(visibleTextWithoutControls(wrapper), wrapper);
   }
 
   function messageVirtualIndex(wrapper) {
@@ -327,20 +418,58 @@
     return isLikelyAssistantMessage(wrapper, messageWrapperText(wrapper));
   }
 
+  function latestIndexedBotText() {
+    const indexedRows = queryPageAll('[data-index]').filter((element) => (
+      isElementNode(element)
+      && !element.closest(`#${ROOT_ID}`)
+    ));
+    const botRows = indexedRows.map((element, order) => {
+      const index = Number.parseInt(element.getAttribute('data-index') || '', 10);
+      const hasBotAvatar = Boolean(element.querySelector('img[src*="/bot-avatars/"], img[alt="Character Icon"]'));
+      const hasDelete = Boolean(element.querySelector('button[aria-label="Delete"]'));
+      const text = messageWrapperText(element);
+
+      return {
+        element,
+        order,
+        index,
+        hasBotAvatar,
+        hasDelete,
+        text,
+      };
+    }).filter((row) => (
+      Number.isFinite(row.index)
+      && row.hasBotAvatar
+      && !row.hasDelete
+    ));
+    const readableRows = botRows.filter((row) => isUsefulMessageText(row.text));
+    const latest = readableRows.sort((left, right) => (
+      right.index - left.index
+      || right.order - left.order
+    ))[0];
+
+    if (latest) return latest.text;
+
+    return '';
+  }
+
   function findLatestRenderedBotText() {
-    const avatarWrappers = Array.from(document.querySelectorAll(
+    const indexedBotText = latestIndexedBotText();
+    if (indexedBotText) return indexedBotText;
+
+    const avatarWrappers = queryPageAll(
       'img[src*="/bot-avatars/"], img[alt="Character Icon"]',
-    )).map(messageWrapperFromAvatar).filter(Boolean);
+    ).map(messageWrapperFromAvatar).filter(Boolean);
 
     const wrappers = Array.from(new Set([
       ...avatarWrappers,
-      ...Array.from(document.querySelectorAll([
+      ...queryPageAll([
       'li[class*="messageDisplayWrapper" i]',
-      '[class*="botChoicesSlider" i] li',
       '[class*="messageDisplayWrapper" i]',
-      ].join(','))),
+      '[data-index]',
+      ].join(',')),
     ])).filter((element) => (
-      element instanceof HTMLElement
+      isElementNode(element)
       && !element.closest(`#${ROOT_ID}`)
       && isBotMessageWrapper(element)
     )).map((element, order) => ({
@@ -362,6 +491,8 @@
 
   function isLikelyUserMessage(element, text) {
     const signature = elementSignature(element);
+    const wrapper = element.closest?.('li[class*="messageDisplayWrapper" i], [class*="messageDisplayWrapper" i]');
+    if (element.querySelector?.('button[aria-label="Delete"]') || wrapper?.querySelector?.('button[aria-label="Delete"]')) return true;
     if (/(^|[\s_-])(user|human|you|outgoing|sent|self)([\s_-]|$)/.test(signature)) return true;
     if (/\buser\s*message\b|\byour\s*message\b/.test(signature)) return true;
     if (/^\s*(you|me)\s*:/i.test(text)) return true;
@@ -418,8 +549,8 @@
 
     for (const selector of selectors) {
       try {
-        for (const element of document.querySelectorAll(selector)) {
-          if (!(element instanceof HTMLElement)) continue;
+        for (const element of queryPageAll(selector)) {
+          if (!isElementNode(element)) continue;
           if (unique.has(element)) continue;
           unique.add(element);
 
@@ -434,7 +565,7 @@
           candidates.push({ element, text });
         }
       } catch (error) {
-        setStatus(`Selector ignored: ${error.message}`, 'warn');
+        console.warn('Kokoro TTS selector ignored:', error);
       }
     }
 
@@ -448,14 +579,14 @@
   function findLatestText() {
     const renderedBotText = findLatestRenderedBotText();
     if (renderedBotText) {
-      latestPreviewEl.textContent = renderedBotText.length > 180 ? `${renderedBotText.slice(0, 180)}...` : renderedBotText;
+      setTextPreview('Latest bot message', renderedBotText);
       return renderedBotText;
     }
 
     const candidates = collectCandidates();
 
     if (!candidates.length) {
-      latestPreviewEl.textContent = 'No message found. Use selected text or the text box.';
+      latestPreviewEl.textContent = 'No latest bot message found. Use selected text or the text box.';
       return '';
     }
 
@@ -476,7 +607,7 @@
     });
 
     const text = cleanExtractedMessageText(best.text);
-    latestPreviewEl.textContent = text.length > 180 ? `${text.slice(0, 180)}...` : text;
+    setTextPreview('Latest message candidate', text);
     return text;
   }
 
@@ -939,7 +1070,7 @@
 
   function startCurrentAudio(offset = playbackOffset) {
     if (!activeAudioBuffer) {
-      setStatus('No generated audio to play yet.', 'warn');
+      if (latestPreviewEl) latestPreviewEl.textContent = 'Playback: no generated audio to play yet.';
       return;
     }
 
@@ -1079,7 +1210,7 @@
   async function speakText(text, label = 'text') {
     const prepared = textForSpeech(text);
     if (!prepared) {
-      setStatus(`No ${label} to read.`, 'warn');
+      if (latestPreviewEl) latestPreviewEl.textContent = `No ${label} to read.`;
       return;
     }
 
@@ -1088,7 +1219,7 @@
     const chunks = splitTextForRequests(prepared);
 
     if (!chunks.length) {
-      setStatus(`No ${label} to read.`, 'warn');
+      if (latestPreviewEl) latestPreviewEl.textContent = `No ${label} to read.`;
       return;
     }
 
@@ -1102,9 +1233,7 @@
       if (stopRequested) {
         setStatus('Stopped.', 'warn');
       } else {
-        setStatus('Playing audio...', 'ok');
         await playCombinedAudio(audioBuffer);
-        if (!stopRequested) setStatus('Finished playback. Use the controller to replay or seek.', 'ok');
       }
     } catch (error) {
       if (stopRequested) setStatus('Stopped.', 'warn');
@@ -1134,26 +1263,24 @@
 
   async function replayLastAudio() {
     if (!activeAudioBuffer) {
-      setStatus('No generated audio to replay yet.', 'warn');
+      if (latestPreviewEl) latestPreviewEl.textContent = 'Playback: no generated audio to replay yet.';
       return;
     }
 
     await unlockAudioPlayback();
     playbackOffset = 0;
     startCurrentAudio(0);
-    setStatus('Replaying last audio.', 'ok');
   }
 
   async function togglePause() {
     if (!activeAudioBuffer) {
-      setStatus('No generated audio to control yet.', 'warn');
+      if (latestPreviewEl) latestPreviewEl.textContent = 'Playback: no generated audio to control yet.';
       return;
     }
 
     if (isPlaybackPaused) {
       await unlockAudioPlayback();
       startCurrentAudio(playbackOffset >= activeAudioBuffer.duration ? 0 : playbackOffset);
-      setStatus('Playback resumed.', 'ok');
       return;
     }
 
@@ -1161,12 +1288,11 @@
     stopActiveSource();
     isPlaybackPaused = true;
     updatePlaybackControls();
-    setStatus('Playback paused.', 'warn');
   }
 
   async function seekRelative(seconds) {
     if (!activeAudioBuffer) {
-      setStatus('No generated audio to seek yet.', 'warn');
+      if (latestPreviewEl) latestPreviewEl.textContent = 'Playback: no generated audio to seek yet.';
       return;
     }
 
@@ -1207,7 +1333,7 @@
       await unlockAudioPlayback();
       return true;
     } catch (error) {
-      setStatus(`Audio setup failed: ${error.message}`, 'error');
+      if (latestPreviewEl) latestPreviewEl.textContent = `Audio setup failed: ${error.message}`;
       return false;
     }
   }
@@ -1594,7 +1720,7 @@
 
     latestPreviewEl = document.createElement('div');
     latestPreviewEl.className = 'kokoro-preview';
-    latestPreviewEl.textContent = 'Latest message preview appears here.';
+    latestPreviewEl.textContent = 'Text preview and character count appear here.';
 
     body.append(
       actionRow,
@@ -1708,13 +1834,16 @@
       if (action === 'read-selected') {
         if (!await prepareAudioFromClick()) return;
         await loadVoices();
-        await speakText(getCurrentSelectionText(), 'selected text');
+        const text = getCurrentSelectionText();
+        setTextPreview('Selected text', text);
+        await speakText(text, 'selected text');
         return;
       }
 
       if (action === 'read-box') {
         if (!await prepareAudioFromClick()) return;
         await loadVoices();
+        setTextPreview('Text box', manualTextEl.value);
         await speakText(manualTextEl.value, 'text box');
       }
     });
@@ -1722,10 +1851,6 @@
     document.addEventListener('selectionchange', updateRememberedSelection);
     document.addEventListener('keyup', updateRememberedSelection, true);
     document.addEventListener('pointerup', updateRememberedSelection, true);
-
-    setInterval(() => {
-      if (!settings.collapsed) findLatestText();
-    }, 2500);
 
     findLatestText();
     loadVoices();
