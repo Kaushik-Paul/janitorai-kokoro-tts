@@ -1,13 +1,14 @@
 # Hugging Face Space keep-alive
 
-This HTTP Cloud Run function sends a lightweight request to six Hugging Face
-Spaces. It uses each CPU API's `/health` route and Gradio's `/config` route for
-the remaining apps, so the daily check does not run model inference or consume
-ZeroGPU quota.
+This HTTP Cloud Run function sends a lightweight request to seven Hugging Face
+Spaces. It uses each CPU API's `/health` route, Gradio's `/config` route where
+available, and the `HF-Drive` root route, so the daily check does not run model
+inference or consume ZeroGPU quota.
 
 The deployed service is private. Cloud Scheduler invokes it with OIDC at
 `08:00 Asia/Kolkata` each day. The Hugging Face token used for the private
-`Manga-Translator-OCR_Copy` Space is injected from Secret Manager.
+`Manga-Translator-OCR_Copy` and `HF-Drive` Spaces is injected from Secret
+Manager.
 
 ## Local tests
 
