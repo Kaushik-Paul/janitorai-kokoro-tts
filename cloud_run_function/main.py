@@ -56,6 +56,10 @@ SPACES = (
         "https://kaushikpaul-hf-drive.hf.space/",
         requires_auth=True,
     ),
+    Space(
+        "Dlp-Video-Downloader",
+        "https://kaushikpaul-dlp-video-downloader.hf.space/",
+    ),
 )
 
 

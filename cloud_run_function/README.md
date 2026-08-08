@@ -1,9 +1,10 @@
 # Hugging Face Space keep-alive
 
-This HTTP Cloud Run function sends a lightweight request to seven Hugging Face
+This HTTP Cloud Run function sends a lightweight request to eight Hugging Face
 Spaces. It uses each CPU API's `/health` route, Gradio's `/config` route where
-available, and the `HF-Drive` root route, so the daily check does not run model
-inference or consume ZeroGPU quota.
+available, and the `HF-Drive` and `Dlp-Video-Downloader` root routes, so the
+daily check does not run model inference, download media, or consume ZeroGPU
+quota.
 
 The deployed service is private. Cloud Scheduler invokes it with OIDC at
 `08:00 Asia/Kolkata` each day. The Hugging Face token used for the private
