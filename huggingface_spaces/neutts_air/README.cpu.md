@@ -19,7 +19,9 @@ preload_from_hub:
 # NeuTTS Air free CPU profile
 
 This profile runs Q4 GGUF on CPU Basic and exposes the Kokoro-compatible REST
-routes. Set `API_PASSWORD` as a Space secret before using the API.
+routes. Set `API_PASSWORD` as a Space secret before using the API, and
+`HF_TOKEN` with a token from an account granted access to the gated Neuphonic
+repos so the `preload_from_hub` step can download the NeuCodec decoder.
 
 The web interface is available at the Space root and requires the same password
 before generation.
