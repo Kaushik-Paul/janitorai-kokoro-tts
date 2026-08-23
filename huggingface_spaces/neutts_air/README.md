@@ -11,9 +11,6 @@ suggested_hardware: cpu-basic
 models:
   - neuphonic/neutts-air-q4-gguf
   - neuphonic/neucodec-onnx-decoder-int8
-preload_from_hub:
-  - neuphonic/neutts-air-q4-gguf neutts-air-Q4_0.gguf
-  - neuphonic/neucodec-onnx-decoder-int8 model.onnx
 ---
 
 # NeuTTS Air on Hugging Face Spaces
@@ -47,11 +44,10 @@ curl -X POST "https://YOUR-SPACE.hf.space/v1/audio/speech" \
   --output speech.wav
 ```
 
-The password-protected Gradio UI is available at the Space root. Public model
-files are preloaded into the image's Hugging Face cache during the build,
-gated Neuphonic files are downloaded at startup using the `HF_TOKEN` secret
-(the preload step cannot authenticate), and the engine is initialized once
-per app process, not once per API request.
+The password-protected Gradio UI is available at the Space root. Every
+Neuphonic repo is gated, so all model files are downloaded at startup using
+the `HF_TOKEN` secret (the unauthenticated preload step cannot fetch them),
+and the engine is initialized once per app process, not once per API request.
 
 ## Tone and style
 
