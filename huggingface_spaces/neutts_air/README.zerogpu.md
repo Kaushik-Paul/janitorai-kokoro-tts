@@ -24,8 +24,8 @@ the calling account. See `README.cpu.md` or the project documentation for the
 free CPU REST deployment and the explanation of reference-based tone control.
 
 Set `API_PASSWORD` as a Space secret, and `HF_TOKEN` with a token from an
-account granted access to the gated Neuphonic repos; the engine downloads the
-gated models with it at startup (the preload step cannot authenticate). The
+account granted access to the gated Neuphonic repos; every Neuphonic repo is
+gated, so the engine downloads all model files with it at startup. The
 visible web interface requires this password before generation. It is not an extra parameter on the
 `synthesize_zerogpu(text, voice, speed)` API endpoint; API callers continue to
 authenticate with their Hugging Face token.

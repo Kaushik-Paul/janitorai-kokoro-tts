@@ -11,8 +11,6 @@ suggested_hardware: cpu-basic
 models:
   - neuphonic/neutts-air-q4-gguf
   - neuphonic/neucodec-onnx-decoder-int8
-preload_from_hub:
-  - neuphonic/neutts-air-q4-gguf neutts-air-Q4_0.gguf
 ---
 
 # NeuTTS Air free CPU profile
@@ -20,8 +18,8 @@ preload_from_hub:
 This profile runs Q4 GGUF on CPU Basic and exposes the Kokoro-compatible REST
 routes. Set `API_PASSWORD` as a Space secret before using the API, and
 `HF_TOKEN` with a token from an account granted access to the gated Neuphonic
-repos; the engine downloads the gated NeuCodec decoder with it at startup
-(the preload step cannot authenticate, so it only fetches public files).
+repos; every Neuphonic repo is gated, so the engine downloads all model files
+with it at startup (the preload step cannot authenticate).
 
 The web interface is available at the Space root and requires the same password
 before generation.
