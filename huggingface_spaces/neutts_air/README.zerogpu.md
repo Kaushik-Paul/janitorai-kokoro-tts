@@ -11,9 +11,6 @@ suggested_hardware: zero-a10g
 models:
   - neuphonic/neutts-air
   - neuphonic/neucodec-onnx-decoder-int8
-preload_from_hub:
-  - neuphonic/neutts-air config.json,generation_config.json,model.safetensors,special_tokens_map.json,tokenizer.json,tokenizer_config.json,vocab.json
-  - neuphonic/neucodec-onnx-decoder-int8 model.onnx
 ---
 
 # NeuTTS Air on ZeroGPU
@@ -27,8 +24,8 @@ the calling account. See `README.cpu.md` or the project documentation for the
 free CPU REST deployment and the explanation of reference-based tone control.
 
 Set `API_PASSWORD` as a Space secret, and `HF_TOKEN` with a token from an
-account granted access to the gated Neuphonic repos so the preload step can
-download them. The visible web interface requires this
-password before generation. It is not an extra parameter on the
+account granted access to the gated Neuphonic repos; the engine downloads the
+gated models with it at startup (the preload step cannot authenticate). The
+visible web interface requires this password before generation. It is not an extra parameter on the
 `synthesize_zerogpu(text, voice, speed)` API endpoint; API callers continue to
 authenticate with their Hugging Face token.

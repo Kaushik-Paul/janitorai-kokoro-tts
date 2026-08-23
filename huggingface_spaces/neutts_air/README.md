@@ -25,8 +25,8 @@ ONNX NeuCodec decoder.
 ## API
 
 Set an `API_PASSWORD` secret in the Space settings, plus an `HF_TOKEN` secret
-from an account granted access to the gated Neuphonic repos; the preload step
-and the engine both authenticate downloads with it. The API matches the
+from an account granted access to the gated Neuphonic repos; the engine
+authenticates its gated downloads with it at startup. The API matches the
 existing Kokoro Cloud Run contract:
 
 - `GET /health`
@@ -47,9 +47,11 @@ curl -X POST "https://YOUR-SPACE.hf.space/v1/audio/speech" \
   --output speech.wav
 ```
 
-The password-protected Gradio UI is available at the Space root. Model files
-are preloaded into the image's Hugging Face cache during the build and the
-engine is initialized once per app process, not once per API request.
+The password-protected Gradio UI is available at the Space root. Public model
+files are preloaded into the image's Hugging Face cache during the build,
+gated Neuphonic files are downloaded at startup using the `HF_TOKEN` secret
+(the preload step cannot authenticate), and the engine is initialized once
+per app process, not once per API request.
 
 ## Tone and style
 

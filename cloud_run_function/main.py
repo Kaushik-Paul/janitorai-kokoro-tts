@@ -60,6 +60,14 @@ SPACES = (
         "Dlp-Video-Downloader",
         "https://kaushikpaul-dlp-video-downloader.hf.space/",
     ),
+    Space(
+        "media-toolbox-gpu",
+        "https://kaushikpaul-media-toolbox-gpu.hf.space/",
+    ),
+    Space(
+        "media-toolbox-cpu",
+        "https://kaushikpaul-media-toolbox-cpu.hf.space/",
+    ),
 )
 
 
