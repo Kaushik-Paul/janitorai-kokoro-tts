@@ -26,7 +26,9 @@ Authenticated API calls should pass a Hugging Face token so quota is charged to
 the calling account. See `README.cpu.md` or the project documentation for the
 free CPU REST deployment and the explanation of reference-based tone control.
 
-Set `API_PASSWORD` as a Space secret. The visible web interface requires this
+Set `API_PASSWORD` as a Space secret, and `HF_TOKEN` with a token from an
+account granted access to the gated Neuphonic repos so the preload step can
+download them. The visible web interface requires this
 password before generation. It is not an extra parameter on the
 `synthesize_zerogpu(text, voice, speed)` API endpoint; API callers continue to
 authenticate with their Hugging Face token.

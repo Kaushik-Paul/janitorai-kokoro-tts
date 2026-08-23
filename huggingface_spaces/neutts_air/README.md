@@ -24,7 +24,9 @@ ONNX NeuCodec decoder.
 
 ## API
 
-Set an `API_PASSWORD` secret in the Space settings. The API matches the
+Set an `API_PASSWORD` secret in the Space settings, plus an `HF_TOKEN` secret
+from an account granted access to the gated Neuphonic repos; the preload step
+and the engine both authenticate downloads with it. The API matches the
 existing Kokoro Cloud Run contract:
 
 - `GET /health`
